@@ -13,7 +13,7 @@
 #endif
 
 #define BENCH
-#define BUFFER_SIZE (AIL_GB(1))
+#define BUFFER_SIZE (AIL_MB(32))
 #define ITER_COUNT 10
 
 #ifdef ALL
