@@ -25,8 +25,6 @@ There are currently 4 routines implemented.
 3. `simd_shuffle`: A simple SIMD loop, using the SSSE3 shuffling instruction for reversing bytes and writing the result into a second buffer
 4. `simd_shuffle_in_place`: A simple SIMD loop, using the same shuffling instruction, but reversing the buffer in place
 
-The results appear to show, depending on the buffer size, about a 10x speed improvement by using the SIMD routines
-
 ## Requirements
 
 A CPU with SSE2 and SSSE3 extensions is required for the SIMD routines to work.
@@ -34,3 +32,16 @@ A CPU with SSE2 and SSSE3 extensions is required for the SIMD routines to work.
 For allocating memory, VirtualAlloc/mmap is currently used. An OS that doesn't support either of these thus requires minor changes.
 
 The code has only been tested on Windows, but should work on Linux as well.
+
+## Results
+
+I encourage you to run this on your own machine, to reproduce these results.
+
+For a 2GB buffer, I got the following results, showing almost 10x speed-up by using SIMD:
+
+![Result for 2GB memory buffer](result_2GB.png)
+
+For a 32MB buffer, I got the following results, showing up to 14x speed-up by using SIMD:
+
+![Result for 32MB memory buffer](result_32MB.png)
+
