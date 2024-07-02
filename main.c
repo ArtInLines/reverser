@@ -12,9 +12,9 @@
 #include <sys/mman.h> // For mmap
 #endif
 
-#define ALL
-#define BUFFER_SIZE (AIL_MB(10) + 15)
-#define ITER_COUNT 100
+#define BENCH
+#define BUFFER_SIZE (AIL_GB(1))
+#define ITER_COUNT 10
 
 #ifdef ALL
 #define TEST
@@ -103,6 +103,30 @@ static void simd_shuffle(Buffer src, Buffer dst) {
 	AIL_BENCH_PROFILE_END(simd_shuffle);
 }
 
+static void simd_shuffle_in_place(Buffer buf) {
+	AIL_BENCH_PROFILE_START(simd_shuffle_in_place);
+	u64 n   = buf.size / (sizeof(__m128) * 2);
+	u64 rem = buf.size % (sizeof(__m128) * 2);
+	__m128i mask = _mm_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15); // Requires SSE2
+	__m128i a, b;
+	__m128i *start = (__m128i*)buf.data;
+	__m128i *end   = (__m128i*)&buf.data[buf.size];
+	for (u64 i = 0; i < n; i++) {
+		a = _mm_loadu_si128(start + i);   // Requires SSE2
+		b = _mm_loadu_si128(end - i - 1); // Requires SSE2
+		a = _mm_shuffle_epi8(a, mask);    // Requires SSSE3
+		b = _mm_shuffle_epi8(b, mask);    // Requires SSSE3
+		_mm_storeu_si128(start + i, b);   // Requires SSE2
+		_mm_storeu_si128(end - i - 1, a); // Requires SSE2
+	}
+	for (u64 i = 0; i < rem/2; i++) {
+		u8 tmp = buf.data[n*sizeof(__m128) + i];
+		buf.data[n*sizeof(__m128) + i] = buf.data[n*sizeof(__m128) + rem - i - 1];
+		buf.data[n*sizeof(__m128) + rem - i - 1] = tmp;
+	}
+	AIL_BENCH_PROFILE_END(simd_shuffle_in_place);
+}
+
 int main(void)
 {
 	Buffer buf, cpy;
@@ -126,6 +150,11 @@ int main(void)
 	simd_shuffle(buf, cpy);
 	if (test_buffer(cpy)) printf("\033[32msimd_shuffle reverses buffers correctly :)\033[0m\n");
 	else printf("\033[31msimd_shuffle failed to reverse the buffer :(\033[0m\n");
+
+	fill_buffer(buf);
+	simd_shuffle_in_place(buf);
+	if (test_buffer(buf)) printf("\033[32msimd_shuffle_in_place reverses buffers correctly :)\033[0m\n");
+	else printf("\033[31msimd_shuffle_in_place failed to reverse the buffer :(\033[0m\n");
 #endif
 
 #ifdef BENCH
@@ -137,7 +166,12 @@ int main(void)
 		scalar(buf, cpy);
 		scalar_in_place(buf);
 		simd_shuffle(buf, cpy);
+		simd_shuffle_in_place(buf);
 	}
+	printf("-----------\n");
+	if (BUFFER_SIZE > AIL_GB(1))      printf("Benchmark Results for Reversing %lldGB of memory\n", BUFFER_SIZE/AIL_GB(1));
+	else if (BUFFER_SIZE > AIL_MB(1)) printf("Benchmark Results for Reversing %lldMB of memory\n", BUFFER_SIZE/AIL_MB(1));
+	else                              printf("Benchmark Results for Reversing %lldKB of memory\n", BUFFER_SIZE/AIL_KB(1));
 	ail_bench_end_and_print_profile(0);
 	AIL_BENCH_END_OF_COMPILATION_UNIT();
 #endif
