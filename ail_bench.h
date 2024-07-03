@@ -240,9 +240,12 @@ void ail_bench_profile_print_anchors(u64 total_tsc_elapsed, b32 clear_anchors)
             printf("\n");
 
             if (clear_anchors) {
-                anchor->hit_count = 0;
-                anchor->elapsed_wo_children = 0;
-                anchor->elapsed_with_children = 0;
+                anchor->hit_count               = 0;
+                anchor->elapsed_wo_children     = 0;
+                anchor->elapsed_with_children   = 0;
+                anchor->min_wo_children         = 0;
+                anchor->min_with_children       = 0;
+                anchor->old_elapsed_wo_children = 0;
             }
         }
     }

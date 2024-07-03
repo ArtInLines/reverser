@@ -12,20 +12,12 @@
 #include <sys/mman.h> // For mmap
 #endif
 
-#define BENCH
-#define BUFFER_SIZE (AIL_MB(32))
-#define ITER_COUNT 10
+#define ALL
+#define ITER_COUNT 4
 
 #ifdef ALL
 #define TEST
 #define BENCH
-#endif
-
-#ifndef BENCH
-#undef  AIL_BENCH_PROFILE_START
-#undef  AIL_BENCH_PROFILE_END
-#define AIL_BENCH_PROFILE_START(name) do {} while(false)
-#define AIL_BENCH_PROFILE_END(name) do {} while(false)
 #endif
 
 typedef struct {
@@ -42,6 +34,14 @@ static Buffer get_buffer(u64 size) {
     buf.data = mmap(0, size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
 #endif
 	return buf;
+}
+
+static void free_buffer(Buffer buf) {
+#if defined(_WIN32) || defined(__WIN32__)
+    VirtualFree(buf.data, buf.size, MEM_DECOMMIT);
+#else
+    munmap(buf.data, buf.size);
+#endif
 }
 
 // @Note: Fills the buffer with a repeating pattern of increasing bytes between 0 and 255. This makes it very easy to see if the buffer was reversed correctly
@@ -82,6 +82,46 @@ static void scalar_in_place(Buffer buf) {
 		buf.data[buf.size - i - 1] = tmp;
 	}
 	AIL_BENCH_PROFILE_END(scalar_in_place);
+}
+
+static void scalar_wide(Buffer src, Buffer dst) {
+	AIL_BENCH_PROFILE_START(scalar_wide);
+	for (u64 i = 0; i < src.size; i += 4) {
+		dst.data[dst.size - i - 1] = src.data[i + 0];
+		dst.data[dst.size - i - 2] = src.data[i + 1];
+		dst.data[dst.size - i - 3] = src.data[i + 2];
+		dst.data[dst.size - i - 4] = src.data[i + 3];
+	}
+	for (u32 i = 0; i < src.size % 4; i++) {
+		dst.data[i] = src.data[src.size - i - 1];
+	}
+	AIL_BENCH_PROFILE_END(scalar_wide);
+}
+
+static void scalar_wide_in_place(Buffer buf) {
+	AIL_BENCH_PROFILE_START(scalar_wide_in_place);
+	u8 tmp[4];
+	u64 n = buf.size/2;
+	for (u64 i = 0; i < n; i += 4) {
+		tmp[0] = buf.data[i + 0];
+		tmp[1] = buf.data[i + 1];
+		tmp[2] = buf.data[i + 2];
+		tmp[3] = buf.data[i + 3];
+		buf.data[i + 0] = buf.data[buf.size - i - 1];
+		buf.data[i + 1] = buf.data[buf.size - i - 2];
+		buf.data[i + 2] = buf.data[buf.size - i - 3];
+		buf.data[i + 3] = buf.data[buf.size - i - 4];
+		buf.data[buf.size - i - 1] = tmp[0];
+		buf.data[buf.size - i - 2] = tmp[1];
+		buf.data[buf.size - i - 3] = tmp[2];
+		buf.data[buf.size - i - 4] = tmp[3];
+	}
+	for (u32 i = 0; i < buf.size % 4; i++) {
+		u8 tmp = buf.data[n + i];
+		buf.data[n + i] = buf.data[n + 7 - i];
+		buf.data[n + 7 - i] = tmp;
+	}
+	AIL_BENCH_PROFILE_END(scalar_wide_in_place);
 }
 
 static void simd_shuffle(Buffer src, Buffer dst) {
@@ -127,52 +167,79 @@ static void simd_shuffle_in_place(Buffer buf) {
 	AIL_BENCH_PROFILE_END(simd_shuffle_in_place);
 }
 
+#define FUNCTIONS \
+	X(scalar, scalar_in_place) \
+	X(scalar_wide, scalar_wide_in_place) \
+	X(simd_shuffle, simd_shuffle_in_place)
+
+void bench(u64 buffer_size)
+{
+	Buffer buf = get_buffer(buffer_size);
+	Buffer cpy = get_buffer(buffer_size);
+	fill_buffer(buf);
+	ail_bench_begin_profile();
+	for (u64 i = 0; i < ITER_COUNT; i++) {
+		#define X(func, func_in_place) { func(buf, cpy); func_in_place(buf); }
+			FUNCTIONS
+		#undef X
+	}
+	printf("-----------\n");
+	if      (buffer_size >= AIL_GB(1)) printf("Benchmark Results for Reversing %lldGB of memory\n", buffer_size/AIL_GB(1));
+	else if (buffer_size >= AIL_MB(1)) printf("Benchmark Results for Reversing %lldMB of memory\n", buffer_size/AIL_MB(1));
+	else if (buffer_size >= AIL_KB(1)) printf("Benchmark Results for Reversing %lldKB of memory\n", buffer_size/AIL_KB(1));
+	else                               printf("Benchmark Results for Reversing %lld bytes of memory\n", buffer_size);
+	ail_bench_end_and_print_profile(true);
+	free_buffer(buf);
+	free_buffer(cpy);
+}
+
+static u64 test_buffer_sizes[] = { 1, 15, 16, 17, 25, 31, 32, 33, 511, 512, 513, AIL_KB(1) + 15, AIL_KB(1) + 17 };
+typedef Buffer BufferList[AIL_ARRLEN(test_buffer_sizes)][2];
+typedef void (FuncType)(Buffer src, Buffer dst);
+typedef void (FuncInPlaceType)(Buffer buf);
+
+static void test(BufferList buffers, FuncType func, FuncInPlaceType func_in_place, char *func_name, char *func_in_place_name) {
+	for (u64 i = 0; i < AIL_ARRLEN(buffers); i++) {
+		fill_buffer(buffers[i][0]);
+		fill_buffer(buffers[i][1]);
+		func(buffers[i][0], buffers[i][1]);
+		if (!test_buffer(buffers[i][1])) {
+			printf("\033[31m%s failed test for buffer-size %lld :(\033[0m\n", func_name, test_buffer_sizes[i]);
+			return;
+		}
+
+		fill_buffer(buffers[i][0]);
+		func_in_place(buffers[i][0]);
+		if (!test_buffer(buffers[i][0])) {
+			printf("\033[31m%s failed test for buffer-size %lld :(\033[0m\n", func_in_place_name, test_buffer_sizes[i]);
+			return;
+		}
+	}
+	printf("\033[32m%s succeeded all tests :)\033[0m\n", func_name);
+	printf("\033[32m%s succeeded all tests :)\033[0m\n", func_in_place_name);
+}
+
 int main(void)
 {
-	Buffer buf, cpy;
-
 #ifdef TEST
-	buf = get_buffer(BUFFER_SIZE);
-	cpy = get_buffer(BUFFER_SIZE);
-	fill_buffer(buf);
-	fill_buffer(cpy);
-	scalar(buf, cpy);
-	if (test_buffer(cpy)) printf("\033[32mscalar reverses buffers correctly :)\033[0m\n");
-	else printf("\033[31mscalar failed to reverse the buffer :(\033[0m\n");
-
-	fill_buffer(buf);
-	scalar_in_place(buf);
-	if (test_buffer(buf)) printf("\033[32mscalar_in_place reverses buffers correctly :)\033[0m\n");
-	else printf("\033[31mscalar_in_place failed to reverse the buffer :(\033[0m\n");
-
-	fill_buffer(buf);
-	fill_buffer(cpy);
-	simd_shuffle(buf, cpy);
-	if (test_buffer(cpy)) printf("\033[32msimd_shuffle reverses buffers correctly :)\033[0m\n");
-	else printf("\033[31msimd_shuffle failed to reverse the buffer :(\033[0m\n");
-
-	fill_buffer(buf);
-	simd_shuffle_in_place(buf);
-	if (test_buffer(buf)) printf("\033[32msimd_shuffle_in_place reverses buffers correctly :)\033[0m\n");
-	else printf("\033[31msimd_shuffle_in_place failed to reverse the buffer :(\033[0m\n");
+	Buffer buffers[AIL_ARRLEN(test_buffer_sizes)][2];
+	for (u64 i = 0; i < AIL_ARRLEN(test_buffer_sizes); i++) {
+		buffers[i][0] = get_buffer(test_buffer_sizes[i]);
+		buffers[i][1] = get_buffer(test_buffer_sizes[i]);
+	}
+	#define X(func, func_in_place) test(buffers, func, func_in_place, AIL_STRINGIZE(func), AIL_STRINGIZE(func_in_place));
+		FUNCTIONS
+	#undef X
+	for (u64 i = 0; i < AIL_ARRLEN(buffers); i++) {
+		free_buffer(buffers[i][0]);
+		free_buffer(buffers[i][1]);
+	}
 #endif
 
 #ifdef BENCH
-	buf = get_buffer(BUFFER_SIZE);
-	cpy = get_buffer(BUFFER_SIZE);
-	fill_buffer(buf);
-	ail_bench_begin_profile();
-	for (u32 i = 0; i < ITER_COUNT; i++) {
-		scalar(buf, cpy);
-		scalar_in_place(buf);
-		simd_shuffle(buf, cpy);
-		simd_shuffle_in_place(buf);
+	for (u64 buffer_size = 128; buffer_size < AIL_GB(1); buffer_size <<= 4) {
+		bench(buffer_size);
 	}
-	printf("-----------\n");
-	if (BUFFER_SIZE > AIL_GB(1))      printf("Benchmark Results for Reversing %lldGB of memory\n", BUFFER_SIZE/AIL_GB(1));
-	else if (BUFFER_SIZE > AIL_MB(1)) printf("Benchmark Results for Reversing %lldMB of memory\n", BUFFER_SIZE/AIL_MB(1));
-	else                              printf("Benchmark Results for Reversing %lldKB of memory\n", BUFFER_SIZE/AIL_KB(1));
-	ail_bench_end_and_print_profile(0);
 	AIL_BENCH_END_OF_COMPILATION_UNIT();
 #endif
 }
