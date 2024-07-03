@@ -86,13 +86,14 @@ static void scalar_in_place(Buffer buf) {
 
 static void scalar_wide(Buffer src, Buffer dst) {
 	AIL_BENCH_PROFILE_START(scalar_wide);
-	for (u64 i = 0; i < src.size; i += 4) {
+	u64 rem = src.size % 4;
+	for (u64 i = 0; i < src.size - rem; i += 4) {
 		dst.data[dst.size - i - 1] = src.data[i + 0];
 		dst.data[dst.size - i - 2] = src.data[i + 1];
 		dst.data[dst.size - i - 3] = src.data[i + 2];
 		dst.data[dst.size - i - 4] = src.data[i + 3];
 	}
-	for (u32 i = 0; i < src.size % 4; i++) {
+	for (u64 i = 0; i < rem; i++) {
 		dst.data[i] = src.data[src.size - i - 1];
 	}
 	AIL_BENCH_PROFILE_END(scalar_wide);
@@ -101,7 +102,7 @@ static void scalar_wide(Buffer src, Buffer dst) {
 static void scalar_wide_in_place(Buffer buf) {
 	AIL_BENCH_PROFILE_START(scalar_wide_in_place);
 	u8 tmp[4];
-	u64 n = buf.size/2;
+	u64 n = buf.size/8*4;
 	for (u64 i = 0; i < n; i += 4) {
 		tmp[0] = buf.data[i + 0];
 		tmp[1] = buf.data[i + 1];
@@ -116,10 +117,10 @@ static void scalar_wide_in_place(Buffer buf) {
 		buf.data[buf.size - i - 3] = tmp[2];
 		buf.data[buf.size - i - 4] = tmp[3];
 	}
-	for (u32 i = 0; i < buf.size % 4; i++) {
+	for (u32 i = 0; i < (buf.size % 8)/2; i++) {
 		u8 tmp = buf.data[n + i];
-		buf.data[n + i] = buf.data[n + 7 - i];
-		buf.data[n + 7 - i] = tmp;
+		buf.data[n + i] = buf.data[n + 6 - i];
+		buf.data[n + 6 - i] = tmp;
 	}
 	AIL_BENCH_PROFILE_END(scalar_wide_in_place);
 }
@@ -199,18 +200,20 @@ typedef void (FuncType)(Buffer src, Buffer dst);
 typedef void (FuncInPlaceType)(Buffer buf);
 
 static void test(BufferList buffers, FuncType func, FuncInPlaceType func_in_place, char *func_name, char *func_in_place_name) {
-	for (u64 i = 0; i < AIL_ARRLEN(buffers); i++) {
-		fill_buffer(buffers[i][0]);
-		fill_buffer(buffers[i][1]);
-		func(buffers[i][0], buffers[i][1]);
-		if (!test_buffer(buffers[i][1])) {
+	for (u64 i = 0; i < AIL_ARRLEN(test_buffer_sizes); i++) {
+		Buffer buf = buffers[i][0];
+		Buffer dst = buffers[i][1];
+		fill_buffer(buf);
+		fill_buffer(dst);
+		func(buf, dst);
+			if (!test_buffer(dst)) {
 			printf("\033[31m%s failed test for buffer-size %lld :(\033[0m\n", func_name, test_buffer_sizes[i]);
 			return;
 		}
 
-		fill_buffer(buffers[i][0]);
-		func_in_place(buffers[i][0]);
-		if (!test_buffer(buffers[i][0])) {
+		fill_buffer(buf);
+		func_in_place(buf);
+		if (!test_buffer(buf)) {
 			printf("\033[31m%s failed test for buffer-size %lld :(\033[0m\n", func_in_place_name, test_buffer_sizes[i]);
 			return;
 		}
@@ -237,7 +240,7 @@ int main(void)
 #endif
 
 #ifdef BENCH
-	for (u64 buffer_size = 128; buffer_size < AIL_GB(1); buffer_size <<= 4) {
+	for (u64 buffer_size = 128; buffer_size <= AIL_GB(2); buffer_size <<= 2) {
 		bench(buffer_size);
 	}
 	AIL_BENCH_END_OF_COMPILATION_UNIT();
